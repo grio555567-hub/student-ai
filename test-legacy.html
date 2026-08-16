@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Legacy cleanup test</title>
+<style>
+body { font-family: monospace; margin: 20px; background: #fff; }
+pre { white-space: pre-wrap; background: #f5f5f5; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+.ok { color: #16a34a; font-weight: 700; }
+.bad { color: #dc2626; font-weight: 700; }
+h3 { margin: 16px 0 6px; }
+</style>
+</head>
+<body>
+<h1>StudyStore — проверка очистки legacy-данных</h1>
+<div id="out"></div>
+<script src="js/store.js?v=8"></script>
+<script>
+(function () {
+  // «грязный» state, как мог сохраниться у пользователя
+  var dirty = {
+    version: 1,
+    profile: { name: 'Студент', streak: 0, lastStudyDay: null },
+    courses: [
+      { id: 'c-chem', name: 'Химия', emoji: '🧪', examDate: null, createdAt: 1 }
+    ],
+    schedule: [],
+    topics: {
+      'c-chem': [
+        { id: 't1', name: 'Матрицы и операцииБазово', level: 3 },
+        { id: 't2', name: 'ОпределителиБазово', level: 2 },
+        { id: 't3', name: 'Системы линейных уравненийНовый', level: 1 },
+        { id: 't4', name: 'Собственные значенияНачало', level: 1 },
+        { id: 't5', name: 'а вам предлагается выполнить серию заданийНовый', level: 0 },
+        { id: 't6', name: 'ам «Лекарства», «Фармацевтика», «Биохимия»Новый', level: 0 },
+        { id: 't7', name: 'О. С.Новый', level: 0 },
+        { id: 't8', name: 'С. ГабриелянНовый', level: 0 },
+        { id: 't9', name: 'И. Г.Новый', level: 0 },
+        { id: 't10', name: 'Г. ОстроумовНовый', level: 0 },
+        { id: 't11', name: 'Остроумов С.Новый', level: 0 },
+        { id: 't12', name: 'С. А.Новый', level: 0 },
+        { id: 't13', name: 'А. СладковНовый', level: 0 },
+        { id: 't14', name: 'Натрий ХлорНовый', level: 0 },
+        { id: 't15', name: 'Габриелян И.Новый', level: 0 },
+        { id: 't16', name: 'Допущено Министерством.Новый', level: 0 }
+      ]
+    },
+    notes: [], materials: [],
+    flashcards: [
+      { id: 'f1', courseId: 'c-chem', topicId: 't1', question: 'Что такое «Успехов вам в изучении химии —»?', answer: 'й интересной и необходимой в жизни каждого человека науки!', kind: 'def' },
+      { id: 'f2', courseId: 'c-chem', topicId: 't2', question: 'Что такое «Хлорид натрия»?', answer: 'Химическое соединение из натрия и хлора.', kind: 'def' }
+    ],
+    quizzes: [
+      {
+        id: 'q1', courseId: 'c-chem', topicId: 't1', title: 'Проверка: тема',
+        questions: [
+          { q: 'Что такое «Успехов вам в изучении химии —»?', options: ['й интересной науки!', 'Нет'], correct: 0 },
+          { q: 'Что такое «Хлорид натрия»?', options: ['Соединение', 'Вещество'], correct: 0 }
+        ]
+      }
+    ],
+    knowledge: { 't1': [{ score: 1, ts: 1 }], 't5': [{ score: 0, ts: 1 }] },
+    mistakes: [], deadlines: [],
+    plan: null, planDone: {}, settings: {}
+  };
+
+  localStorage.setItem('studymind-state-v1', JSON.stringify(dirty));
+  StudyStore.load();
+
+  var out = document.getElementById('out');
+  var s = '';
+  var topics = StudyStore.state.topics['c-chem'] || [];
+  var cards = StudyStore.state.flashcards || [];
+  var quizes = StudyStore.state.quizzes || [];
+
+  s += '<h2>Темы после очистки (' + topics.length + ')</h2><pre>' +
+       topics.map(function (t) { return '• ' + t.name; }).join('\n') + '</pre>';
+
+  var gone = dirty.topics['c-chem'].length - topics.length;
+  s += gone > 0 ? '<div class="ok">✓ Удалено мусорных тем: ' + gone + '</div>'
+                : '<div class="bad">⚠ Мусорные темы не удалены</div>';
+
+  s += '<h2>Карточки после очистки (' + cards.length + ')</h2><pre>' +
+       cards.map(function (c) { return '• ' + c.question + ' => ' + c.answer; }).join('\n') + '</pre>';
+  s += cards.length === 1 && cards[0].question.indexOf('Хлорид') > -1
+       ? '<div class="ok">✓ Мусорная карточка «Успехов...» удалена</div>'
+       : '<div class="bad">⚠ Проверь карточки</div>';
+
+  s += '<h2>Тесты после очистки (' + quizes.length + ')</h2><pre>' +
+       quizes.map(function (q) {
+         return q.questions.map(function (x) { return '- ' + x.q; }).join('\n');
+       }).join('\n') + '</pre>';
+
+  out.innerHTML = s;
+})();
+</script>
+</body>
+</html>

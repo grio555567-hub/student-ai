@@ -563,17 +563,34 @@
       });
   }
 
-  /* ================= MATERIAL IMPORT (real files) ================= */
+  /* ================= MATERIAL IMPORT (real files + OCR) ================= */
+  function ocrImage(file, onDone, onError) {
+    var worker = Tesseract.createWorker('rus+eng');
+    worker.then(function (w) {
+      w.recognize(file).then(function (res) {
+        var text = (res && res.data && res.data.text) || '';
+        w.terminate();
+        onDone(text);
+      }).catch(function (err) {
+        try { w.terminate(); } catch (e) {}
+        onError(err);
+      });
+    }).catch(function (err) {
+      onError(err);
+    });
+  }
+
   function openImportMaterialModal() {
     var supportsPdf = !!window.pdfjsLib;
+    var supportsOcr = !!window.Tesseract;
     var pdfHint = supportsPdf
-      ? 'Поддерживаются PDF, TXT, MD и копированный текст.'
+      ? 'Поддерживаются PDF, TXT, MD, изображения (JPG/PNG) с распознаванием текста.'
       : 'PDF.js не загрузился (нет интернета?). Для PDF вставь текст вручную.';
     openModal('Импорт материала',
       '<div class="field"><label>Курс</label><select class="select" id="imp-course">' + courseOptions() + '</select></div>' +
       '<div class="field"><label>Файл</label>' +
-      '<input class="input" type="file" id="imp-file" accept=".pdf,.txt,.md,text/plain" style="padding:8px">' +
-      '<p class="muted" style="margin-top:6px">' + pdfHint + '</p></div>' +
+      '<input class="input" type="file" id="imp-file" accept=".pdf,.txt,.md,.jpg,.jpeg,.png,image/*,text/plain" style="padding:8px">' +
+      '<p class="muted" style="margin-top:6px">' + pdfHint + (supportsOcr ? '' : ' (OCR недоступен офлайн)') + '</p></div>' +
       '<div class="field"><label>Название (авто из файла)</label><input class="input" id="imp-name" placeholder="Лекции_глава2.pdf"></div>' +
       '<div class="field"><label>Вид</label><select class="select" id="imp-kind">' +
       '<option value="pdf">PDF</option><option value="ppt">Презентация</option><option value="doc">Документ</option>' +
@@ -588,10 +605,20 @@
         var textArea = m.querySelector('#imp-text');
         var goBtn = m.querySelector('#imp-go');
 
+        function setBusy(label) {
+          goBtn.disabled = true;
+          goBtn.textContent = label;
+        }
+        function setReady() {
+          goBtn.disabled = false;
+          goBtn.textContent = 'Извлечь знания';
+        }
+
         function detectKind(fileName) {
           var n = (fileName || '').toLowerCase();
           if (n.indexOf('.ppt') > -1) return 'ppt';
           if (n.indexOf('.pdf') > -1) return 'pdf';
+          if (n.indexOf('.jpg') > -1 || n.indexOf('.jpeg') > -1 || n.indexOf('.png') > -1) return 'doc';
           return 'doc';
         }
 
@@ -602,6 +629,7 @@
           kindSelect.value = detectKind(file.name);
 
           var ext = file.name.split('.').pop().toLowerCase();
+
           if (ext === 'txt' || ext === 'md') {
             var reader = new FileReader();
             reader.onload = function () {
@@ -612,14 +640,30 @@
             return;
           }
 
+          // images -> OCR
+          if (['jpg', 'jpeg', 'png'].indexOf(ext) > -1) {
+            if (!window.Tesseract) {
+              toast('OCR недоступен. Установи интернет-соединение или вставь текст вручную.', 'error');
+              return;
+            }
+            setBusy('Распознаю текст (OCR)...');
+            ocrImage(file, function (text) {
+              textArea.value = (text || '').slice(0, 200000);
+              setReady();
+              toast(text && text.trim().length > 10 ? 'Текст распознан' : 'Не удалось распознать текст на изображении', text && text.trim().length > 10 ? '' : 'error');
+            }, function () {
+              setReady();
+              toast('Ошибка OCR. Вставь текст вручную.', 'error');
+            });
+            return;
+          }
+
           if (ext === 'pdf' && window.pdfjsLib) {
-            goBtn.disabled = true;
-            goBtn.textContent = 'Читаю PDF...';
+            setBusy('Читаю PDF...');
             var fr = new FileReader();
             fr.onload = function () {
               var data = new Uint8Array(fr.result);
               window.pdfjsLib.getDocument({ data: data }).promise.then(function (pdfDoc) {
-                var pages = [];
                 var promises = [];
                 for (var p = 1; p <= Math.min(pdfDoc.numPages, 60); p++) {
                   promises.push(pdfDoc.getPage(p).then(function (page) {
@@ -629,14 +673,27 @@
                   }));
                 }
                 return Promise.all(promises).then(function (texts) {
-                  textArea.value = texts.join('\n').slice(0, 200000);
-                  goBtn.disabled = false;
-                  goBtn.textContent = 'Извлечь знания';
+                  var joined = texts.join('\n').trim();
+                  // scanned PDF: no text layer -> OCR first pages
+                  if (joined.replace(/\s+/g, '').length < 40 && window.Tesseract) {
+                    setBusy('Скан PDF: распознаю страницы (OCR)...');
+                    ocrPdf(file, Math.min(pdfDoc.numPages, 5), function (ocrText) {
+                      textArea.value = (ocrText || '').slice(0, 200000);
+                      setReady();
+                      toast('Скан распознан через OCR');
+                    }, function () {
+                      textArea.value = joined;
+                      setReady();
+                      toast('OCR не сработал. Вставь текст вручную.', 'error');
+                    });
+                    return;
+                  }
+                  textArea.value = joined.slice(0, 200000);
+                  setReady();
                   toast('PDF: извлечено страниц ' + texts.length);
                 });
               }).catch(function () {
-                goBtn.disabled = false;
-                goBtn.textContent = 'Извлечь знания';
+                setReady();
                 toast('Не удалось распарсить PDF. Вставь текст вручную.', 'error');
               });
             };
@@ -649,8 +706,55 @@
             return;
           }
 
-          toast('Формат не поддерживается напрямую — вставь текст вручную (или TXT/PDF)', 'error');
+          toast('Формат не поддерживается напрямую — вставь текст вручную (или TXT/PDF/JPG/PNG)', 'error');
         });
+
+        // OCR a scanned PDF: render first N pages to canvas and run Tesseract
+        function ocrPdf(file, maxPages, onDone, onError) {
+          try {
+            var fr2 = new FileReader();
+            fr2.onload = function () {
+              var data = new Uint8Array(fr2.result);
+              window.pdfjsLib.getDocument({ data: data }).promise.then(function (pdfDoc) {
+                var out = [];
+                var idx = 0;
+                function next() {
+                  if (idx >= Math.min(maxPages, pdfDoc.numPages)) {
+                    onDone(out.join('\n'));
+                    return;
+                  }
+                  var pageNum = idx + 1;
+                  pdfDoc.getPage(pageNum).then(function (page) {
+                    var viewport = page.getViewport({ scale: 2 });
+                    var canvas = document.createElement('canvas');
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    var ctx = canvas.getContext('2d');
+                    page.render({ canvasContext: ctx, viewport: viewport }).promise.then(function () {
+                      canvas.toBlob(function (blob) {
+                        if (!blob) { idx++; next(); return; }
+                        var worker = Tesseract.createWorker('rus+eng');
+                        worker.then(function (w) {
+                          w.recognize(blob).then(function (res) {
+                            out.push((res && res.data && res.data.text) || '');
+                            w.terminate();
+                            idx++;
+                            next();
+                          }).catch(function () {
+                            idx++;
+                            next();
+                          });
+                        }).catch(function () { idx++; next(); });
+                      }, 'image/png');
+                    }).catch(function () { idx++; next(); });
+                  }).catch(function () { idx++; next(); });
+                }
+                next();
+              }).catch(onError);
+            };
+            fr2.readAsArrayBuffer(file);
+          } catch (e) { onError(e); }
+        }
 
         m.querySelector('#imp-go').addEventListener('click', function () {
           var courseId = m.querySelector('#imp-course').value;

@@ -66,6 +66,63 @@
 
   const LEVEL_LABELS = { 0: 'Новый', 1: 'Начало', 2: 'Базово', 3: 'Уверенно', 4: 'Отлично' };
 
+  /* ---------- legacy data hygiene ----------
+     Old versions could save garbage topics like «Матрицы и операцииБазово»,
+     «О. С.Новый», «ам «Лекарства»...» or flashcards containing PDF
+     artifacts («|») and greeting fragments («й интересной...»).
+     These helpers clean them up on load and on insert. */
+  function cleanLegacyTopicName(name) {
+    let s = String(name == null ? '' : name).trim();
+    s = s.replace(/\|/g, ' ');
+    // склейка слов, разорванных переносом при извлечении из PDF:
+    // «Сло- жение», «Сло -жение», «мето -дика»
+    s = s.replace(/([а-яёa-z])-\s+(?=[а-яёa-z])/g, '$1');
+    s = s.replace(/([а-яёa-z])\s+-(?=[а-яёa-z])/g, '$1');
+    // прилипшие уровни: «Матрицы и операцииБазово» / «ОпределителиБазово»
+    s = s.replace(/\s*(Новый|Начало|Базово|Уверенно|Отлично)\s*$/i, '');
+    // артефакты PDF: номера страниц, «5.» и т.п.
+    s = s.replace(/^[\s№:—-]+/, '').replace(/^\d+[\s:.)-]*\s*/, '');
+    s = s.replace(/[.:!?;]+$/, '');
+    return s.trim();
+  }
+
+  function isGarbageTopicName(name) {
+    const s = String(name == null ? '' : name).trim();
+    if (!s || s.length < 3 || s.length > 80) return true;
+    if (s.indexOf('|') > -1) return true;
+    if (/успехов|предлагается|серия заданий|добро пожаловать|спасибо|желаю|благодарю|приветств|дорогие друзья/i.test(s)) return true;
+    // кавычки/тире в названии темы — признак обрывка из PDF («ам «Лекарства»...»)
+    if (/[«»—-]/.test(s)) return true;
+    // обрывки определений: «ам «Лекарства»», «й интересной», «ым порошком»
+    if (/^(й|ам|вым|ым|ом|ем|их|ого|его|ими|ыми|ая|ое|ые|ий)(?=\s|$)/i.test(s)) return true;
+    // разорванный перенос PDF: «Сло- жение», «мето -дика»
+    if (/[а-яёa-z]-\s+|[а-яёa-z]\s+-/.test(s)) return true;
+    // титульные страницы / авторы (кириллица после корня: «Министерством», «образования»)
+    if (/^(допущено|рецензент|составител|удк|ббк|isbn|издательств|министерств[а-яё]*|образован[а-яё]*|год издани|автор|вам|вас)(?=\s|$)/i.test(s)) return true;
+
+    // инициалы: «О. С.», «И. Г.», «Габриелян И.»
+    if (/(^|\s)[А-ЯЁA-Z]\.(\s|$)/.test(s)) return true;
+    if (/\s[А-ЯЁA-Z]\.?\s*$/.test(s)) return true;
+    if (/^[А-ЯЁA-Z]\.\s+[А-ЯЁA-Z]/.test(s)) return true;
+    // чисто строчные фрагменты или служебные слова
+    // (в JS «\b» не работает с кириллицей — используем (?=\s|$))
+    if (/^(это|так|вот|значит|самое|главное|важно|основное|необходимо|нужно)(?=\s|$)/i.test(s)) return true;
+    return false;
+  }
+
+  function isGarbageFlashcard(f) {
+    if (!f || typeof f !== 'object') return true;
+    const q = String(f.question || '');
+    const a = String(f.answer || '');
+    if (q.indexOf('|') > -1 || a.indexOf('|') > -1) return true;
+    if (/успехов|предлагается|серия заданий|добро пожаловать|спасибо|желаю|благодарю|приветств/i.test(q + ' ' + a)) return true;
+    if (/^(й|ам|ым|ом|ем|их|ого|его)(?=\s|$)/i.test(a.trim())) return true;
+    // разорванный перенос PDF («Сло- жение», «мето -дика»)
+    if (/[а-яёa-z]-\s+|[а-яёa-z]\s+-/.test(q + ' ' + a)) return true;
+    if (q.length < 4 || a.length < 2) return true;
+    return false;
+  }
+
   /* ---------- default demo state ---------- */
   function demoState() {
     const today = todayStr();
@@ -245,7 +302,7 @@
 
     return {
       version: 1,
-      profile: { name: 'Студент', streak: 4, lastStudyDay: todayStr(-1) },
+      profile: { name: 'Студент', streak: 0, lastStudyDay: null },
       courses: courses,
       schedule: schedule,
       topics: topics,
@@ -286,9 +343,11 @@
           if (!this.state.profile || typeof this.state.profile !== 'object') {
             this.state.profile = { name: 'Студент', streak: 0, lastStudyDay: null };
           }
+          this.cleanLegacyData();
           this.save();
           return;
         }
+
       } catch (e) { /* corrupted -> fresh */ }
       this.state = demoState();
       this.save();
@@ -317,6 +376,64 @@
       };
       this.save();
     },
+
+    /* remove garbage topics / flashcards / quiz questions saved by old versions */
+    cleanLegacyData() {
+      const state = this.state;
+      let changed = false;
+
+      // 1. topics: clean names, drop garbage
+      Object.keys(state.topics || {}).forEach(courseId => {
+        const kept = [];
+        (state.topics[courseId] || []).forEach(t => {
+          if (!t || typeof t !== 'object') return;
+          const cleaned = cleanLegacyTopicName(t.name);
+          if (!cleaned || isGarbageTopicName(cleaned)) {
+            if (t.id && state.knowledge) delete state.knowledge[t.id];
+            changed = true;
+            return;
+          }
+          if (t.name !== cleaned) { t.name = cleaned; changed = true; }
+          if (kept.some(x => x.name.toLowerCase() === cleaned.toLowerCase())) {
+            changed = true;
+            return;
+          }
+          kept.push(t);
+        });
+        state.topics[courseId] = kept;
+      });
+
+      // 2. flashcards: drop cards with artifacts / fragments
+      const cardsBefore = state.flashcards ? state.flashcards.length : 0;
+      state.flashcards = (state.flashcards || []).filter(f => {
+        const ok = !isGarbageFlashcard(f);
+        if (!ok && f && f.topicId && state.knowledge) delete state.knowledge[f.topicId];
+        return ok;
+      });
+      if (state.flashcards.length !== cardsBefore) changed = true;
+
+      // 3. quiz questions: drop questions with PDF artifacts or greeting fragments
+      const fixedQuizzes = (state.quizzes || []).map(q => {
+        if (!q || !Array.isArray(q.questions)) return q;
+        const before = q.questions.length;
+        q.questions = q.questions.filter(question => {
+          if (!question || typeof question !== 'object') return false;
+          const text = String(question.q || '') + ' ' + (Array.isArray(question.options) ? question.options.join(' ') : '');
+          if (text.indexOf('|') > -1) return false;
+          if (/успехов|предлагается|серия заданий|добро пожаловать|спасибо|желаю|благодарю|приветств/i.test(text)) return false;
+          // разорванный перенос PDF: «Сло- жение», «мето -дика»
+          if (/[а-яёa-z]-\s+|[а-яёa-z]\s+-/.test(text)) return false;
+          return true;
+        });
+        if (q.questions.length !== before) changed = true;
+        return q;
+      }).filter(q => q && Array.isArray(q.questions) && q.questions.length > 0);
+      if (fixedQuizzes.length !== state.quizzes.length) changed = true;
+      state.quizzes = fixedQuizzes;
+
+      if (changed) this.save();
+    },
+
 
     /* courses */
     getCourse(id) { return this.state.courses.find(c => c.id === id); },
@@ -350,14 +467,18 @@
     ensureTopics(courseId, names) {
       const list = this.state.topics[courseId] || (this.state.topics[courseId] = []);
       let changed = false;
-      names.forEach(name => {
-        if (!list.some(t => t.name.toLowerCase() === name.toLowerCase())) {
+      names.forEach(rawName => {
+        const name = cleanLegacyTopicName(rawName);
+        if (!name || isGarbageTopicName(name)) return;
+        const already = list.some(t => t.name.toLowerCase() === name.toLowerCase());
+        if (!already) {
           list.push({ id: uid('t'), name: name, level: 0 });
           changed = true;
         }
       });
       if (changed) this.save();
     },
+
 
     /* recording / notes */
     addNote(courseId, title, kind, text, durSec) {
@@ -385,9 +506,13 @@
 
     /* cards & quizzes */
     addFlashcards(courseId, topicId, cards) {
-      cards.forEach(card => this.state.flashcards.push({ id: uid('f'), courseId: courseId, topicId: topicId, ...card }));
+      cards.forEach(card => {
+        if (isGarbageFlashcard(card)) return;
+        this.state.flashcards.push({ id: uid('f'), courseId: courseId, topicId: topicId, ...card });
+      });
       this.save();
     },
+
     addQuiz(courseId, topicId, questions) {
       const quiz = { id: uid('q'), courseId: courseId, topicId: topicId, title: 'Проверка: ' + (this.topicName(topicId) || 'тема'), questions: questions };
       this.state.quizzes.unshift(quiz);
@@ -429,7 +554,8 @@
       this.save();
     },
     getPlan() { return this.state.plan; },
-    markPlanDay(date, courseId, topicId, done) {
+    /* args order: (date, topicId, courseId, done) to match data-plan-done="date|topicId|courseId" */
+    markPlanDay(date, topicId, courseId, done) {
       const key = date + '|' + topicId;
       if (done) this.state.planDone[key] = true;
       else delete this.state.planDone[key];

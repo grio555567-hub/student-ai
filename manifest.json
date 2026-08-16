@@ -5,8 +5,10 @@
   "lang": "ru",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#FFF8E7",
-  "theme_color": "#FFF8E7",
+  "background_color": "#FAFAF8",
+  "theme_color": "#FAFAF8",
+
+
   "icons": [
     {
       "src": "./icon.svg",

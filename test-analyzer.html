@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Analyzer v9 test</title>
+<style>
+body { font-family: monospace; margin: 20px; background: #fff; font-size: 13px; }
+pre { white-space: pre-wrap; background: #f5f5f5; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+.ok { color: #16a34a; font-weight: 700; }
+.bad { color: #dc2626; font-weight: 700; }
+h2 { margin: 18px 0 6px; font-size: 16px; }
+h3 { margin: 14px 0 4px; font-size: 14px; }
+.box { background:#fff; border:1px solid #ddd; border-radius:8px; padding:10px; margin:6px 0; }
+</style>
+</head>
+<body>
+<h1>StudyAnalyzer v9 — проверка учебников / PDF / карточек / тестов</h1>
+<div id="out"></div>
+
+<script src="js/store.js?v=12"></script>
+<script src="js/analyzer.js?v=12"></script>
+<script>
+(function () {
+  var out = document.getElementById('out');
+  var s = '';
+  var fails = 0;
+  function check(cond, label) {
+    s += (cond ? '<div class="ok">✓ ' : '<div class="bad">✗ ') + label + '</div>';
+    if (!cond) fails++;
+  }
+
+  /* ================= 1. Legacy-очистка уже созданных данных ================= */
+  var dirty = {
+    version: 1,
+    profile: { name: 'Студент', streak: 0, lastStudyDay: null },
+    courses: [{ id: 'c-chem', name: 'Химия', emoji: '🧪', examDate: null, createdAt: 1 }],
+    schedule: [],
+    topics: {
+      'c-chem': [
+        { id: 't1', name: 'Матрицы и операцииБазово', level: 3 },
+        { id: 't2', name: 'Сло- жение дробейНовый', level: 0 },
+        { id: 't3', name: 'мето -дика расчётовНовый', level: 0 },
+        { id: 't4', name: 'ам «Лекарства»Новый', level: 0 },
+        { id: 't5', name: 'О. С.Новый', level: 0 },
+        { id: 't6', name: 'Допущено Министерством.Новый', level: 0 },
+        { id: 't7', name: 'Натрий ХлорНовый', level: 0 }
+      ]
+    },
+    notes: [], materials: [],
+    flashcards: [
+      { id: 'f1', courseId: 'c-chem', topicId: 't1', question: 'Что такое «Успехов вам —»?', answer: 'й интересной науки!', kind: 'def' },
+      { id: 'f2', courseId: 'c-chem', topicId: 't2', question: 'Что такое «Хлорид натрия»?', answer: 'Вещество из натрия и хлора.', kind: 'def' }
+    ],
+    quizzes: [{
+      id: 'q1', courseId: 'c-chem', topicId: 't1', title: 'Тест',
+      questions: [
+        { q: 'Что такое «Сло- жение»?', options: ['Много', 'Нет'], correct: 0 },
+        { q: 'Что такое «Хлорид натрия»?', options: ['Соединение', 'Вещество'], correct: 0 }
+      ]
+    }],
+    knowledge: { 't1': [{ score: 1, ts: 1 }] },
+    mistakes: [], deadlines: [], plan: null, planDone: {}, settings: {}
+  };
+  localStorage.setItem('studymind-state-v1', JSON.stringify(dirty));
+  StudyStore.load();
+  var cleanTopics = (StudyStore.state.topics['c-chem'] || []).map(function (t) { return t.name; });
+  s += '<h2>1. Legacy-очистка</h2>';
+  s += '<div class="box"><pre>' + cleanTopics.join('\n') + '</pre></div>';
+  check(cleanTopics.indexOf('Сложение дробей') > -1, '«Сло- жение дробей» склеено в «Сложение дробей»');
+  check(cleanTopics.indexOf('мето -дика расчётов') < 0 && cleanTopics.indexOf('методика расчётов') > -1, '«мето -дика расчётов» склеен в «методика расчётов»');
+  check(cleanTopics.indexOf('Матрицы и операции') > -1, '«Матрицы и операцииБазово» очищен');
+  check(cleanTopics.indexOf('Натрий Хлор') > -1, '«Натрий Хлор» сохранён');
+  check(cleanTopics.filter(function (n) { return /Новый|Начало|Базово/.test(n); }).length === 0, 'Уровни-суффиксы удалены со всех тем');
+  check(cleanTopics.indexOf('О. С.') < 0 && cleanTopics.indexOf('ам «Лекарства»') < 0 && !cleanTopics.some(function (n) { return n.indexOf('Допущено') > -1; }), 'Авторы/инициалы/титул («Допущено Министерством») удалены');
+  check(!(StudyStore.state.flashcards || []).some(function (f) { return f.answer.indexOf('й интересной') > -1; }), 'Мусорная карточка «Успехов...» удалена');
+  check(StudyStore.state.quizzes[0].questions.length === 1, 'Вопрос с «Сло- жение» удалён из теста, валидный остался');
+
+  /* ================= 2. Анализ «грязного» текста учебника ================= */
+  var textbook =
+    'Глава 1. Введение в органическую химию.\n' +
+    'Допущено Министерством образования Российской Федерации.\n' +
+    'Рецензент: профессор С. И. Иванов.\n' +
+    'Успехов вам в изучении химии! Желаем удачи.\n' +
+    'Рассмотрим строение атома углерода. Атом углерода — это химический элемент с порядковым номером 6.\n' +
+    'Химическая связь — это взаимодействие атомов, которое приводит к образованию молекул.\n' +
+    'Функция определяется на множестве действительных чисел.\n' +
+    'Валентность — это способность атома образовывать химические связи.\n' +
+    'Глава 2. Предельные углеводороды.\n' +
+    'Алканы — это насыщенные углеводороды, в молекулах которых атомы углерода соединены простыми связями.\n' +
+    'Мета- новая цепь\n' +
+    'Формула метана: CH4.\n' +
+    'Задание 1. Вычислите массовую долю углерода в метане.\n' +
+    'Важно: алканы вступают в реакции замещения.\n' +
+    'Параграф 3. Химические свойства алканов.\n';
+
+  var a = StudyAnalyzer.analyze(textbook);
+
+  s += '<h2>2. Анализ текста учебника</h2>';
+  s += '<h3>Темы</h3><div class="box"><pre>' + (a.topics.length ? a.topics.join('\n') : '(пусто)') + '</pre></div>';
+  check(a.topics.indexOf('Введение в органическую химию') > -1, 'Тема «Введение в органическую химию» извлечена');
+  check(a.topics.indexOf('Предельные углеводороды') > -1, 'Тема «Предельные углеводороды» извлечена');
+  check(a.topics.indexOf('Химические свойства алканов') > -1, 'Тема «Химические свойства алканов» извлечена');
+  check(a.topics.indexOf('Метановая цепь') > -1, 'Тема «Метановая цепь» извлечена (склейка «Мета- новая»)');
+  check(a.topics.indexOf('Вычислите массовую') < 0, '«Вычислите массовую» (повелительное) не тема');
+  check(a.topics.filter(function (t) {
+    return /Допущено|Рецензент|С. И\.|Иванов|Успехов|Желаем|Рассмотрим|Функция определяется|Мета- новая/.test(t);
+  }).length === 0, 'Мусорные темы (титул, авторы, приветствия, канцелярит, переносы) отфильтрованы');
+  check(!a.topics.some(function (t) { return /-\s|\s-\s/.test(t); }), 'В темах нет разорванных переносов');
+
+  s += '<h3>Определения</h3><div class="box"><pre>' + (a.definitions.length ? a.definitions.map(function (d) { return d.term + ' — ' + d.definition; }).join('\n') : '(пусто)') + '</pre></div>';
+  var defTerms = a.definitions.map(function (d) { return d.term; });
+  check(defTerms.indexOf('Атом углерода') > -1, 'Определение: атом углерода');
+  check(defTerms.indexOf('Химическая связь') > -1, 'Определение: химическая связь');
+  check(defTerms.indexOf('Валентность') > -1, 'Определение: валентность');
+  check(defTerms.indexOf('Алканы') > -1, 'Определение: алканы');
+  check(defTerms.length >= 4, 'Извлечено не менее 4 определений');
+  check(defTerms.indexOf('Функция') < 0, 'Обрывок определения «Функция — на множестве...» отброшен');
+
+  s += '<h3>Карточки</h3>';
+  var breaks = a.flashcards.filter(function (c) { return /-\s/.test(c.question) || /-\s/.test(c.answer) || /…$/.test(c.answer); });
+  s += '<div class="box"><pre>' + (a.flashcards.length ? a.flashcards.map(function (c, i) { return (i + 1) + '. Q: ' + c.question + '\n   A: ' + c.answer; }).join('\n') : '(пусто)') + '</pre></div>';
+  check(a.flashcards.length >= 8, 'Сгенерировано не менее 8 карточек (' + a.flashcards.length + ')');
+  check(breaks.length === 0, 'Нет карточек с обрезанными словами и переносами');
+  check(!a.flashcards.some(function (c) { return c.question.indexOf('Функция') > -1 || c.answer.indexOf('на множестве') > -1; }), 'Нет карточек, построенных из обрывков определений («на множестве...»)');
+  check(!a.flashcards.some(function (c) { return /^[а-яё]{1,2}\s/.test(c.answer.trim()) && !/^(и|в|с|на|по|о|об|от|из|а|но|до|при|за|у|или|к|для|не|ни|со|во|ко|их|её|ее)\s/.test(c.answer.trim()); }), 'Ответы не начинаются с обрывка слова');
+
+  s += '<h3>Тест</h3>';
+  s += '<div class="box"><pre>' + (a.quiz.length ? a.quiz.map(function (q, i) {
+    return (i + 1) + '. ' + q.q + '\n   ' + q.options.map(function (o, j) { return (j === q.correct ? '✔ ' : '  ') + o; }).join('\n   ');
+  }).join('\n\n') : '(пусто)') + '</pre></div>';
+  check(a.quiz.length >= 3, 'Сгенерировано не менее 3 вопросов (' + a.quiz.length + ')');
+  var badOpts = a.quiz.reduce(function (acc, q) {
+    q.options.forEach(function (o) { if (/-\s|\s-\s/.test(o) || /…$/.test(o)) acc.push(o); });
+    return acc;
+  }, []);
+  check(badOpts.length === 0, 'Нет вариантов с обрезанными словами');
+  check(a.quiz.every(function (q) { return q.options.length === q.options.filter(function (x, i, arr) { return arr.indexOf(x) === i; }).length; }), 'Дубли в вариантах отсутствуют');
+  check(a.quiz.some(function (q) { return q.q === 'Что такое «Валентность»?'; }), 'Есть вопрос «Что такое валентность»');
+  check(!a.quiz.some(function (q) { return q.q.indexOf('Функция') > -1; }), 'Нет тестовых вопросов от обрывков определений');
+
+  /* ================= 3. Тексты без канцелярита ================= */
+  var lect = StudyAnalyzer.analyze(
+    'Лекция 5. Интегралы.\n' +
+    'Определение: первообразная — функция, производная которой равна данной функции.\n' +
+    'Интеграл — это площадь под кривой графика функции.\n' +
+    'Формула Ньютона-Лейбница: ∫ₐᵇ f(x)dx = F(b) − F(a).\n' +
+    'Задание: вычислить интеграл ∫x² dx.\n'
+  );
+  s += '<h2>3. Лекция (чистый текст)</h2>';
+  s += '<div class="box"><pre>Темы: ' + lect.topics.join(', ') + '\nДеф.: ' + lect.definitions.map(function (d) { return d.term; }).join(', ') + '\nКарточек: ' + lect.flashcards.length + '\nВопросов: ' + lect.quiz.length + '</pre></div>';
+  check(lect.definitions.some(function (d) { return d.term === 'Первообразная' || d.term === 'первообразная'; }), 'Определение «первообразная» извлечено');
+
+  /* Fill-blank: однословный термин, повторённый в самом определении */
+  var repeat = StudyAnalyzer.analyze('Уравнение — это математическое равенство, уравнение содержит неизвестную величину.');
+  var fillBlank = repeat.flashcards.filter(function (c) { return c.question.indexOf('Вставь пропущенное слово') > -1; });
+  s += '<div class="box"><pre>Fill-blank (повтор термина): ' + (fillBlank.length ? 'есть' : 'нет') + '\n' +
+       fillBlank.map(function (c) { return 'Q: ' + c.question + '\nA: ' + c.answer; }).join('\n') + '</pre></div>';
+  check(fillBlank.length > 0, 'Fill-blank карточка создаётся при повторе термина в определении');
+  check(!fillBlank.some(function (c) { return c.answer.length < 3 || /…/.test(c.answer); }), 'Fill-blank не даёт обрубленных ответов');
+
+  s += '<h2>Итог</h2>';
+  s += fails === 0
+    ? '<div class="ok" style="font-size:16px">Все проверки пройдены ✓</div>'
+    : '<div class="bad" style="font-size:16px">Провалено проверок: ' + fails + '</div>';
+
+  out.innerHTML = s;
+})();
+</script>
+</body>
+</html>
